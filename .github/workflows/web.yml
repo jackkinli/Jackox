@@ -18,13 +18,11 @@ env:
   GODOT_VERSION: "4.4.1-stable"
   GODOT_RELEASE_TAG: "4.4.1-stable"
   GODOT_TEMPLATES_DIRNAME: "4.4.1.stable"
-  EXPORT_NAME: "Blox3D"
   EXPORT_DIR: "builds/web"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,21 +41,19 @@ jobs:
           wget -O .cache/godot/godot.zip "$URL"
           unzip -o .cache/godot/godot.zip -d .cache/godot
           chmod +x .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64
-          echo "$GITHUB_WORKSPACE/.cache/godot" >> $GITHUB_PATH
 
-      - name: Download export templates (ALL WEB variants) and install
+      - name: Download + install export templates (web)
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p .cache/godot
-
           URL="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE_TAG}/Godot_v${GODOT_VERSION}_export_templates.tpz"
-          wget --tries=5 --timeout=60 -O .cache/godot/templates.tpz "$URL"
+          wget --tries=8 --timeout=60 -O .cache/godot/templates.tpz "$URL"
 
           TEMPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$TEMPL_DIR"
 
-          # Godot .tpz is a ZIP. Extract all web-related templates + version.
+          # Godot .tpz is a ZIP, not a tar. Extract web-related templates + version.
           unzip -q -o -j .cache/godot/templates.tpz \
             "templates/web_debug.zip" \
             "templates/web_release.zip" \
@@ -70,21 +66,45 @@ jobs:
             "templates/version.txt" \
             -d "$TEMPL_DIR"
 
-          echo "Installed templates in: $TEMPL_DIR"
+          echo "Templates installed to: $TEMPL_DIR"
           ls -la "$TEMPL_DIR"
-
-          # Sanity checks
           test -f "$TEMPL_DIR/version.txt"
           test -f "$TEMPL_DIR/web_release.zip"
-          test -f "$TEMPL_DIR/web_nothreads_release.zip"
 
-      - name: Verify export preset exists
+      - name: CI patch export_presets.cfg (keep ONLY Web preset)
         shell: bash
         run: |
           set -euxo pipefail
-          PRESETS="$GITHUB_WORKSPACE/export_presets.cfg"
-          test -f "$PRESETS"
-          grep -n 'name="Web"' "$PRESETS"
+          test -f "$GITHUB_WORKSPACE/export_presets.cfg"
+          cp "$GITHUB_WORKSPACE/export_presets.cfg" "$GITHUB_WORKSPACE/export_presets.cfg.bak"
+
+          python3 - << 'PY'
+          import re, pathlib
+          p = pathlib.Path("export_presets.cfg")
+          s = p.read_text(encoding="utf-8", errors="ignore")
+
+          # Grab the Web preset block (both [preset.N] and [preset.N.options])
+          m = re.search(r'(\[preset\.(\d+)\][\s\S]*?name="Web"[\s\S]*?)(?=(\n\[preset\.\d+\])|\Z)', s)
+          if not m:
+            raise SystemExit('Could not find a preset with name="Web" in export_presets.cfg')
+
+          block = m.group(1)
+          n = m.group(2)
+
+          # Renumber preset headers to preset.0
+          block = re.sub(rf'\[preset\.{n}\]', '[preset.0]', block)
+          block = re.sub(rf'\[preset\.{n}\.options\]', '[preset.0.options]', block)
+
+          # Ensure export_path points to builds/web/index.html (safe default)
+          block = re.sub(r'export_path="[^"]*"', 'export_path="builds/web/index.html"', block)
+
+          p.write_text(block.strip() + "\n", encoding="utf-8")
+          print("Wrote CI-only export_presets.cfg containing ONLY the Web preset as preset.0")
+          PY
+
+          echo "----- export_presets.cfg (CI) -----"
+          cat "$GITHUB_WORKSPACE/export_presets.cfg"
+          echo "----------------------------------"
 
       - name: Export Web build
         shell: bash
@@ -93,7 +113,7 @@ jobs:
           mkdir -p "${EXPORT_DIR}"
 
           set +e
-          Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose --path "$GITHUB_WORKSPACE" \
+          .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose --path "$GITHUB_WORKSPACE" \
             --export-release "Web" "${EXPORT_DIR}/index.html" 2>&1 | tee export.log
           status=${PIPESTATUS[0]}
           set -e
@@ -101,7 +121,6 @@ jobs:
           echo "----- LAST 200 LINES export.log -----"
           tail -n 200 export.log || true
           echo "-------------------------------------"
-
           exit "$status"
 
       - name: Add PWA files (manifest + service worker)
@@ -110,16 +129,14 @@ jobs:
           set -euxo pipefail
           cd "${EXPORT_DIR}"
 
-          # Copy PWA assets
           cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
           cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
           cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
 
-          # Build a precache list (relative URLs)
           python3 - << 'PY'
           import os, json
           files=[]
-          for root, dirs, filenames in os.walk("."):
+          for root, _, filenames in os.walk("."):
             for f in filenames:
               if f == "sw.js":
                 continue
@@ -132,7 +149,6 @@ jobs:
             json.dump(files, fp)
           PY
 
-          # Create sw.js with embedded precache list
           python3 - << 'PY'
           import json
           tpl=open("$GITHUB_WORKSPACE/pwa/sw.js","r",encoding="utf-8").read()
@@ -141,7 +157,6 @@ jobs:
           open("sw.js","w",encoding="utf-8").write(out)
           PY
 
-          # Inject <link rel="manifest"> and register service worker
           python3 - << 'PY'
           import re
           html=open("index.html","r",encoding="utf-8").read()
