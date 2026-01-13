@@ -1,0 +1,137 @@
+name: Build & Deploy (Web PWA)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  GODOT_VERSION: "4.4.1-stable"
+  GODOT_RELEASE_TAG: "4.4.1-stable"
+  GODOT_TEMPLATES_DIRNAME: "4.4.1.stable"
+  EXPORT_NAME: "Blox3D"
+  EXPORT_DIR: "builds/web"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip wget ca-certificates
+
+      - name: Download Godot headless
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .cache/godot
+          URL="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE_TAG}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          wget -O .cache/godot/godot.zip "$URL"
+          unzip -o .cache/godot/godot.zip -d .cache/godot
+          chmod +x .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64
+          echo "$GITHUB_WORKSPACE/.cache/godot" >> $GITHUB_PATH
+
+      - name: Download export templates (web only) from official tpz
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .cache/godot
+          # Official templates are large (~1.2 GB). GitHub generally handles this reliably; wget will retry.
+          URL="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE_TAG}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          wget --tries=5 --timeout=60 -O .cache/godot/templates.tpz "$URL"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
+          tar -xf .cache/godot/templates.tpz -C "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}" --strip-components=1             web_debug.zip web_release.zip version.txt || true
+          # Fallback: extract everything if selective extract failed (tar implementations vary)
+          if [ ! -f "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}/web_release.zip" ]; then
+            tar -xf .cache/godot/templates.tpz -C "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}" --strip-components=1
+          fi
+          ls -l "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
+
+      - name: Export Web build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${EXPORT_DIR}"
+          Godot_v${GODOT_VERSION}_linux.x86_64 --headless --path "$GITHUB_WORKSPACE" --export-release "Web" "${EXPORT_DIR}/index.html"
+
+      - name: Add PWA files (manifest + service worker)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "${EXPORT_DIR}"
+
+          # Copy PWA assets
+          cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
+          cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
+          cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
+
+          # Build a precache list (relative URLs)
+          python3 - << 'PY'
+          import os, json
+          files=[]
+          for root, dirs, filenames in os.walk("."):
+            for f in filenames:
+              if f == "sw.js": 
+                continue
+              p=os.path.join(root,f).replace("\\","/")
+              if p.startswith("./"):
+                p=p[2:]
+              files.append("./"+p)
+          files.sort()
+          with open("_precache.json","w") as fp:
+            json.dump(files, fp)
+          PY
+
+          # Create sw.js with embedded precache list
+          python3 - << 'PY'
+          import json
+          tpl=open("$GITHUB_WORKSPACE/pwa/sw.js","r",encoding="utf-8").read()
+          precache=json.load(open("_precache.json","r"))
+          out=tpl.replace("__PRECACHE__", json.dumps(precache))
+          open("sw.js","w",encoding="utf-8").write(out)
+          PY
+
+          # Inject <link rel="manifest"> and register service worker
+          python3 - << 'PY'
+          import re
+          html=open("index.html","r",encoding="utf-8").read()
+
+          if "manifest.webmanifest" not in html:
+            html=re.sub(r"(</head>)", '  <link rel="manifest" href="manifest.webmanifest">\n  <meta name="theme-color" content="#0f1115">\n\1', html, flags=re.I)
+
+          if "navigator.serviceWorker" not in html:
+            snippet="""\n<script>\nif ('serviceWorker' in navigator) {\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\n}\n</script>\n"""
+            html=re.sub(r"(</body>)", snippet + "\1", html, flags=re.I)
+
+          open("index.html","w",encoding="utf-8").write(html)
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.EXPORT_DIR }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
