@@ -45,7 +45,7 @@ jobs:
           chmod +x .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64
           echo "$GITHUB_WORKSPACE/.cache/godot" >> $GITHUB_PATH
 
-      - name: Download export templates (WEB ONLY) and install correctly
+      - name: Download export templates (ALL WEB variants) and install
         shell: bash
         run: |
           set -euxo pipefail
@@ -57,18 +57,34 @@ jobs:
           TEMPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$TEMPL_DIR"
 
-          # Godot .tpz is a ZIP. Extract ONLY the files this project’s Web preset expects.
+          # Godot .tpz is a ZIP. Extract all web-related templates + version.
           unzip -q -o -j .cache/godot/templates.tpz \
+            "templates/web_debug.zip" \
+            "templates/web_release.zip" \
             "templates/web_nothreads_debug.zip" \
             "templates/web_nothreads_release.zip" \
+            "templates/web_dlink_debug.zip" \
+            "templates/web_dlink_release.zip" \
+            "templates/web_dlink_nothreads_debug.zip" \
+            "templates/web_dlink_nothreads_release.zip" \
             "templates/version.txt" \
             -d "$TEMPL_DIR"
 
           echo "Installed templates in: $TEMPL_DIR"
           ls -la "$TEMPL_DIR"
-          test -f "$TEMPL_DIR/web_nothreads_release.zip"
-          test -f "$TEMPL_DIR/web_nothreads_debug.zip"
+
+          # Sanity checks
           test -f "$TEMPL_DIR/version.txt"
+          test -f "$TEMPL_DIR/web_release.zip"
+          test -f "$TEMPL_DIR/web_nothreads_release.zip"
+
+      - name: Verify export preset exists
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PRESETS="$GITHUB_WORKSPACE/export_presets.cfg"
+          test -f "$PRESETS"
+          grep -n 'name="Web"' "$PRESETS"
 
       - name: Export Web build
         shell: bash
