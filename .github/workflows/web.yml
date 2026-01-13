@@ -32,7 +32,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip wget ca-certificates
+          sudo apt-get install -y unzip wget ca-certificates rsync
 
       - name: Download Godot headless
         shell: bash
@@ -50,16 +50,31 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p .cache/godot
+
           # Official templates are large (~1.2 GB). GitHub generally handles this reliably; wget will retry.
           URL="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE_TAG}/Godot_v${GODOT_VERSION}_export_templates.tpz"
           wget --tries=5 --timeout=60 -O .cache/godot/templates.tpz "$URL"
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
-          tar -xf .cache/godot/templates.tpz -C "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}" --strip-components=1             web_debug.zip web_release.zip version.txt || true
-          # Fallback: extract everything if selective extract failed (tar implementations vary)
-          if [ ! -f "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}/web_release.zip" ]; then
-            tar -xf .cache/godot/templates.tpz -C "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}" --strip-components=1
+
+          TEMPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
+          mkdir -p "$TEMPL_DIR"
+
+          # Godot .tpz is actually a ZIP, not a tar archive
+          rm -rf .cache/godot/templates_extracted
+          mkdir -p .cache/godot/templates_extracted
+          unzip -q -o .cache/godot/templates.tpz -d .cache/godot/templates_extracted
+
+          # The tpz normally contains a "templates/" folder
+          if [ -d ".cache/godot/templates_extracted/templates" ]; then
+            rsync -a ".cache/godot/templates_extracted/templates/" "$TEMPL_DIR/"
+          else
+            rsync -a ".cache/godot/templates_extracted/" "$TEMPL_DIR/"
           fi
-          ls -l "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
+
+          ls -l "$TEMPL_DIR"
+
+          # Ensure web templates exist
+          test -f "$TEMPL_DIR/web_release.zip"
+          test -f "$TEMPL_DIR/web_debug.zip"
 
       - name: Export Web build
         shell: bash
@@ -85,7 +100,7 @@ jobs:
           files=[]
           for root, dirs, filenames in os.walk("."):
             for f in filenames:
-              if f == "sw.js": 
+              if f == "sw.js":
                 continue
               p=os.path.join(root,f).replace("\\","/")
               if p.startswith("./"):
@@ -111,11 +126,11 @@ jobs:
           html=open("index.html","r",encoding="utf-8").read()
 
           if "manifest.webmanifest" not in html:
-            html=re.sub(r"(</head>)", '  <link rel="manifest" href="manifest.webmanifest">\n  <meta name="theme-color" content="#0f1115">\n\1', html, flags=re.I)
+            html=re.sub(r"(</head>)", '  <link rel="manifest" href="manifest.webmanifest">\\n  <meta name="theme-color" content="#0f1115">\\n\\1', html, flags=re.I)
 
           if "navigator.serviceWorker" not in html:
-            snippet="""\n<script>\nif ('serviceWorker' in navigator) {\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\n}\n</script>\n"""
-            html=re.sub(r"(</body>)", snippet + "\1", html, flags=re.I)
+            snippet="\\n<script>\\nif ('serviceWorker' in navigator) {\\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n}\\n</script>\\n"
+            html=re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
 
           open("index.html","w",encoding="utf-8").write(html)
           PY
