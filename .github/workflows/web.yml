@@ -2,7 +2,7 @@ name: Build & Deploy (Web PWA)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -17,8 +17,7 @@ concurrency:
 env:
   GODOT_VERSION: "4.4.1-stable"
   GODOT_TEMPLATES_DIRNAME: "4.4.1.stable"
-  EXPORT_NAME: "Blox3D"
-  EXPORT_DIR: "builds/web"
+  EXPORT_DIR_REL: "builds/web"
 
 jobs:
   build:
@@ -33,6 +32,21 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y unzip wget ca-certificates python3
+
+      - name: Locate Godot project directory
+        id: locate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PROJECT_FILE="$(find . -name project.godot -print -quit)"
+          if [ -z "${PROJECT_FILE:-}" ]; then
+            echo "ERROR: Could not find project.godot in repo."
+            exit 1
+          fi
+          PROJECT_DIR="$(cd "$(dirname "$PROJECT_FILE")" && pwd)"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Found project.godot at: $PROJECT_FILE"
+          echo "Using PROJECT_DIR: $PROJECT_DIR"
 
       - name: Download Godot headless
         shell: bash
@@ -61,7 +75,6 @@ jobs:
           TMP="$(mktemp -d)"
           unzip -q -o .cache/godot/templates.tpz -d "$TMP"
 
-          # Godot tpz layout is usually: TMP/templates/<files>
           if [ -d "$TMP/templates" ]; then
             cp -a "$TMP/templates/." "$DEST/"
           else
@@ -71,154 +84,125 @@ jobs:
           echo "Installed templates to: $DEST"
           ls -la "$DEST" | head -n 80
           test -f "$DEST/web_release.zip"
+          test -f "$DEST/web_debug.zip"
 
-      - name: Ensure Web export preset exists
+      - name: Ensure Web export preset exists (in the same folder as project.godot)
         shell: bash
         run: |
           set -euxo pipefail
-          PRESETS="export_presets.cfg"
+          PRESETS="$PROJECT_DIR/export_presets.cfg"
 
           if [ ! -f "$PRESETS" ]; then
-            echo "No export_presets.cfg found — creating one with a Web preset."
-            cat > "$PRESETS" <<'CFG'
-[preset.0]
-name="Web"
-platform="Web"
-runnable=true
-dedicated_server=false
-custom_features=""
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="builds/web/index.html"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
-
-[preset.0.options]
-CFG
+            echo "No export_presets.cfg found — creating one with a Web preset at $PRESETS"
+            {
+              echo '[preset.0]'
+              echo 'name="Web"'
+              echo 'platform="Web"'
+              echo 'runnable=true'
+              echo 'dedicated_server=false'
+              echo 'custom_features=""'
+              echo 'export_filter="all_resources"'
+              echo 'include_filter=""'
+              echo 'exclude_filter=""'
+              echo 'export_path="builds/web/index.html"'
+              echo 'encryption_include_filters=""'
+              echo 'encryption_exclude_filters=""'
+              echo 'encrypt_pck=false'
+              echo 'encrypt_directory=false'
+              echo 'script_export_mode=1'
+              echo ''
+              echo '[preset.0.options]'
+            } > "$PRESETS"
           else
             if ! grep -q 'platform="Web"' "$PRESETS"; then
               echo "export_presets.cfg exists but has no Web preset — appending one."
-              cat >> "$PRESETS" <<'CFG'
-
-[preset.99]
-name="Web"
-platform="Web"
-runnable=true
-dedicated_server=false
-custom_features=""
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="builds/web/index.html"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
-
-[preset.99.options]
-CFG
+              {
+                echo ''
+                echo '[preset.99]'
+                echo 'name="Web"'
+                echo 'platform="Web"'
+                echo 'runnable=true'
+                echo 'dedicated_server=false'
+                echo 'custom_features=""'
+                echo 'export_filter="all_resources"'
+                echo 'include_filter=""'
+                echo 'exclude_filter=""'
+                echo 'export_path="builds/web/index.html"'
+                echo 'encryption_include_filters=""'
+                echo 'encryption_exclude_filters=""'
+                echo 'encrypt_pck=false'
+                echo 'encrypt_directory=false'
+                echo 'script_export_mode=1'
+                echo ''
+                echo '[preset.99.options]'
+              } >> "$PRESETS"
             fi
           fi
 
-          echo "----- export_presets.cfg (first 160 lines) -----"
-          sed -n '1,160p' "$PRESETS"
+          echo "----- export_presets.cfg (first 200 lines) -----"
+          sed -n '1,200p' "$PRESETS"
 
       - name: Export Web build
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "${EXPORT_DIR}"
+          EXPORT_DIR="$PROJECT_DIR/${EXPORT_DIR_REL}"
+          mkdir -p "$EXPORT_DIR"
 
           Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose \
-            --path "$GITHUB_WORKSPACE" \
-            --export-release "Web" "${EXPORT_DIR}/index.html"
+            --path "$PROJECT_DIR" \
+            --export-release "Web" "$EXPORT_DIR/index.html"
 
-          ls -la "${EXPORT_DIR}" | head -n 120
-          test -f "${EXPORT_DIR}/index.html"
+          ls -la "$EXPORT_DIR" | head -n 80
+          test -f "$EXPORT_DIR/index.html"
 
       - name: Add PWA files (manifest + service worker)
         shell: bash
         run: |
           set -euxo pipefail
+          EXPORT_DIR="$PROJECT_DIR/${EXPORT_DIR_REL}"
 
-          # Ensure PWA folder exists
+          # These must exist in your repo at /pwa/
           test -f "$GITHUB_WORKSPACE/pwa/manifest.webmanifest"
-          test -f "$GITHUB_WORKSPACE/pwa/sw.js"
           test -f "$GITHUB_WORKSPACE/pwa/icon-192.png"
           test -f "$GITHUB_WORKSPACE/pwa/icon-512.png"
+          test -f "$GITHUB_WORKSPACE/pwa/sw.js"
 
-          cd "${EXPORT_DIR}"
+          cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" "$EXPORT_DIR/manifest.webmanifest"
+          cp "$GITHUB_WORKSPACE/pwa/icon-192.png" "$EXPORT_DIR/icon-192.png"
+          cp "$GITHUB_WORKSPACE/pwa/icon-512.png" "$EXPORT_DIR/icon-512.png"
 
-          cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
-          cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
-          cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
-
-          # Build a precache list (relative URLs)
-          python3 - << 'PY'
-          import os, json
-          files=[]
-          for root, dirs, filenames in os.walk("."):
-            for f in filenames:
-              if f in ("sw.js", "_precache.json"):
-                continue
-              p=os.path.join(root,f).replace("\\","/")
-              if p.startswith("./"):
-                p=p[2:]
-              files.append("./"+p)
-          files.sort()
-          with open("_precache.json","w") as fp:
-            json.dump(files, fp)
-          PY
+          # Build precache list
+          python3 -c "import os,json; root='$EXPORT_DIR'; files=[]; \
+for r,ds,fs in os.walk(root): \
+  for f in fs: \
+    if f in ('sw.js','_precache.json'): continue; \
+    p=os.path.join(r,f); rel=os.path.relpath(p,root).replace('\\\\','/'); files.append('./'+rel); \
+files.sort(); open(os.path.join(root,'_precache.json'),'w').write(json.dumps(files))"
 
           # Create sw.js with embedded precache list
-          python3 - << 'PY'
-          import os, json
-          tpl=open(os.path.join(os.environ["GITHUB_WORKSPACE"],"pwa","sw.js"),"r",encoding="utf-8").read()
-          precache=json.load(open("_precache.json","r",encoding="utf-8"))
-          out=tpl.replace("__PRECACHE__", json.dumps(precache))
-          open("sw.js","w",encoding="utf-8").write(out)
-          PY
+          python3 -c "import os,json; root='$EXPORT_DIR'; tpl=open('$GITHUB_WORKSPACE/pwa/sw.js','r',encoding='utf-8').read(); \
+pre=json.load(open(os.path.join(root,'_precache.json'),'r')); \
+out=tpl.replace('__PRECACHE__', json.dumps(pre)); \
+open(os.path.join(root,'sw.js'),'w',encoding='utf-8').write(out)"
 
-          # Inject manifest + service worker registration into index.html
-          python3 - << 'PY'
-          import re
-          html=open("index.html","r",encoding="utf-8").read()
+          # Inject manifest + service worker registration
+          python3 -c "import re,os; root='$EXPORT_DIR'; p=os.path.join(root,'index.html'); html=open(p,'r',encoding='utf-8').read(); \
+if 'manifest.webmanifest' not in html: \
+  html=re.sub(r'(</head>)', '  <link rel=\"manifest\" href=\"manifest.webmanifest\">\\n  <meta name=\"theme-color\" content=\"#0f1115\">\\n\\\\1', html, flags=re.I); \
+if 'navigator.serviceWorker' not in html: \
+  snippet='\\n<script>\\nif (\\x27serviceWorker\\x27 in navigator) {\\n  window.addEventListener(\\x27load\\x27, () => navigator.serviceWorker.register(\\x27./sw.js\\x27));\\n}\\n</script>\\n'; \
+  html=re.sub(r'(</body>)', snippet+'\\\\1', html, flags=re.I); \
+open(p,'w',encoding='utf-8').write(html)"
 
-          if "manifest.webmanifest" not in html:
-            html=re.sub(
-              r"(</head>)",
-              '  <link rel="manifest" href="manifest.webmanifest">\\n'
-              '  <meta name="theme-color" content="#0f1115">\\n\\1',
-              html,
-              flags=re.I
-            )
-
-          if "navigator.serviceWorker" not in html:
-            snippet=(
-              "\\n<script>\\n"
-              "if ('serviceWorker' in navigator) {\\n"
-              "  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n"
-              "}\\n"
-              "</script>\\n"
-            )
-            html=re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
-
-          open("index.html","w",encoding="utf-8").write(html)
-          PY
-
-          rm -f _precache.json
+          rm -f "$EXPORT_DIR/_precache.json"
           echo "PWA injected OK."
-          ls -la | head -n 120
+          ls -la "$EXPORT_DIR" | head -n 80
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ env.EXPORT_DIR }}
+          path: ${{ env.PROJECT_DIR }}/${{ env.EXPORT_DIR_REL }}
 
   deploy:
     needs: build
