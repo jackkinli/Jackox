@@ -1,9 +1,8 @@
 name: Build & Deploy (Web PWA)
 
-"on":
+on:
   push:
-    branches:
-      - main
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -12,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: "pages"
   cancel-in-progress: false
 
 env:
@@ -23,6 +22,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,64 +57,96 @@ jobs:
           DEST="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$DEST"
 
-          TMPDIR="$(mktemp -d)"
-          unzip -q -o .cache/godot/templates.tpz -d "$TMPDIR"
+          TMP="$(mktemp -d)"
+          unzip -q -o .cache/godot/templates.tpz -d "$TMP"
 
-          # Godot tpz layout is usually TMPDIR/templates/<files>
-          if [ -d "$TMPDIR/templates" ]; then
-            cp -a "$TMPDIR/templates/." "$DEST/"
+          # Godot tpz layout is usually: TMP/templates/<files>
+          if [ -d "$TMP/templates" ]; then
+            cp -a "$TMP/templates/." "$DEST/"
           else
-            cp -a "$TMPDIR/." "$DEST/"
+            cp -a "$TMP/." "$DEST/"
           fi
 
           echo "Installed templates to: $DEST"
           ls -la "$DEST" | head -n 80
           test -f "$DEST/web_release.zip"
 
-      - name: Ensure Web export preset exists
+      - name: Ensure Web export preset exists (with required options)
         shell: bash
         run: |
           set -euxo pipefail
+
           python3 - <<'PY'
+          import re
           from pathlib import Path
-          import textwrap
 
-          presets = Path("export_presets.cfg")
+          presets_path = Path("export_presets.cfg")
 
-          web_block = textwrap.dedent("""\
-          [preset.99]
-          name="Web"
-          platform="Web"
-          runnable=true
-          dedicated_server=false
-          custom_features=""
-          export_filter="all_resources"
-          include_filter=""
-          exclude_filter=""
-          export_path="builds/web/index.html"
-          encryption_include_filters=""
-          encryption_exclude_filters=""
-          encrypt_pck=false
-          encrypt_directory=false
-          script_export_mode=1
+          web_block_template = r"""
+[preset.{idx}]
+name="Web"
+platform="Web"
+runnable=true
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter=""
+exclude_filter=""
+export_path="builds/web/index.html"
+encryption_include_filters=""
+encryption_exclude_filters=""
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=1
 
-          [preset.99.options]
-          """)
+[preset.{idx}.options]
+custom_template/debug=""
+custom_template/release=""
+variant/extensions_support=false
+vram_texture_compression/for_desktop=true
+vram_texture_compression/for_mobile=false
+html/export_icon=true
+html/custom_html_shell=""
+html/head_include=""
+html/canvas_resize_policy=2
+html/focus_canvas_on_start=true
+html/experimental_virtual_keyboard=false
+progressive_web_app/enabled=false
+progressive_web_app/offline_page=""
+progressive_web_app/display=1
+progressive_web_app/orientation=0
+progressive_web_app/icon_144x144=""
+progressive_web_app/icon_180x180=""
+progressive_web_app/icon_512x512=""
+progressive_web_app/background_color=Color (0, 0, 0, 1)
+include_coi_service_worker=true
+iframe_breakout="Disabled"
+""".lstrip("\n")
 
-          # Strip the indentation we introduced for YAML readability:
-          web_block = "\n".join(line.lstrip() for line in web_block.splitlines()).strip() + "\n"
-
-          if not presets.exists():
-              presets.write_text(web_block.replace("[preset.99]", "[preset.0]"), encoding="utf-8")
+          if not presets_path.exists():
+            # Create fresh file with Web preset at index 0
+            presets_path.write_text(web_block_template.format(idx=0), encoding="utf-8")
+            print("Created export_presets.cfg with a Web preset.")
           else:
-              txt = presets.read_text(encoding="utf-8", errors="ignore")
-              if 'platform="Web"' not in txt:
-                  presets.write_text(txt.rstrip() + "\n\n" + web_block, encoding="utf-8")
+            text = presets_path.read_text(encoding="utf-8", errors="replace")
 
-          print("----- export_presets.cfg (first 140 lines) -----")
-          lines = presets.read_text(encoding="utf-8", errors="ignore").splitlines()
-          for i, line in enumerate(lines[:140], 1):
-              print(f"{i:03d}: {line}")
+            # If a Web preset already exists, do nothing
+            if 'platform="Web"' in text and 'name="Web"' in text:
+              print("Web preset already present in export_presets.cfg")
+            else:
+              # Find existing indices and append with next index
+              indices = [int(m.group(1)) for m in re.finditer(r"\[preset\.(\d+)\]", text)]
+              next_idx = (max(indices) + 1) if indices else 0
+              with presets_path.open("a", encoding="utf-8") as f:
+                if not text.endswith("\n"):
+                  f.write("\n")
+                f.write("\n" + web_block_template.format(idx=next_idx))
+              print(f"Appended Web preset at index {next_idx}.")
+
+          # Show top of file for debugging
+          out = presets_path.read_text(encoding="utf-8", errors="replace").splitlines()
+          print("----- export_presets.cfg (first 160 lines) -----")
+          print("\n".join(out[:160]))
           PY
 
       - name: Export Web build
@@ -134,70 +166,80 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          cd "${EXPORT_DIR}"
 
-          OUT="$GITHUB_WORKSPACE/${EXPORT_DIR}"
-          cd "$OUT"
-
+          # These must exist in your repo:
+          # pwa/manifest.webmanifest
+          # pwa/sw.js               (must contain "__PRECACHE__" placeholder)
+          # pwa/icon-192.png
+          # pwa/icon-512.png
           cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
           cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
           cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
 
+          # Build a precache list (relative URLs)
           python3 - <<'PY'
           import os, json
-
           files=[]
-          for root, _, filenames in os.walk("."):
-              for f in filenames:
-                  if f in ("sw.js", "_precache.json"):
-                      continue
-                  p=os.path.join(root,f).replace("\\","/")
-                  if p.startswith("./"):
-                      p=p[2:]
-                  files.append("./"+p)
-
+          for root, dirs, filenames in os.walk("."):
+            for f in filenames:
+              if f in ("sw.js", "_precache.json"):
+                continue
+              p=os.path.join(root,f).replace("\\","/")
+              if p.startswith("./"):
+                p=p[2:]
+              files.append("./"+p)
           files.sort()
           with open("_precache.json","w",encoding="utf-8") as fp:
-              json.dump(files, fp)
+            json.dump(files, fp)
           PY
 
+          # Create sw.js with embedded precache list
           python3 - <<'PY'
           import os, json
-
-          root=os.environ["GITHUB_WORKSPACE"]
-          tpl=open(os.path.join(root,"pwa","sw.js"),"r",encoding="utf-8").read()
+          tpl_path=os.path.join(os.environ["GITHUB_WORKSPACE"],"pwa","sw.js")
+          tpl=open(tpl_path,"r",encoding="utf-8").read()
           precache=json.load(open("_precache.json","r",encoding="utf-8"))
           out=tpl.replace("__PRECACHE__", json.dumps(precache))
           open("sw.js","w",encoding="utf-8").write(out)
           PY
 
+          # Inject manifest + service worker registration into index.html
           python3 - <<'PY'
           import re
-
           html=open("index.html","r",encoding="utf-8").read()
 
           if "manifest.webmanifest" not in html:
-              html=re.sub(
-                  r"(</head>)",
-                  '  <link rel="manifest" href="manifest.webmanifest">\\n'
-                  '  <meta name="theme-color" content="#0f1115">\\n\\1',
-                  html,
-                  flags=re.I,
-              )
+            html=re.sub(
+              r"(</head>)",
+              '  <link rel="manifest" href="manifest.webmanifest">\\n'
+              '  <meta name="theme-color" content="#0f1115">\\n'
+              r"\\1",
+              html,
+              flags=re.I
+            )
 
           if "navigator.serviceWorker" not in html:
-              snippet="\\n<script>\\nif ('serviceWorker' in navigator) {\\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n}\\n</script>\\n"
-              html=re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
+            snippet = (
+              "\\n<script>\\n"
+              "if ('serviceWorker' in navigator) {\\n"
+              "  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n"
+              "}\\n"
+              "</script>\\n"
+            )
+            html=re.sub(r"(</body>)", snippet + r"\\1", html, flags=re.I)
 
           open("index.html","w",encoding="utf-8").write(html)
           PY
 
           rm -f _precache.json
+          echo "PWA injected OK."
           ls -la | head -n 120
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: builds/web
+          path: ${{ env.EXPORT_DIR }}
 
   deploy:
     needs: build
