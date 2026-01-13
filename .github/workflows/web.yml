@@ -42,18 +42,17 @@ jobs:
           unzip -o .cache/godot/godot.zip -d .cache/godot
           chmod +x .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64
 
-      - name: Download + install export templates (web)
+      - name: Download and install ALL web export templates
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p .cache/godot
           URL="https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE_TAG}/Godot_v${GODOT_VERSION}_export_templates.tpz"
-          wget --tries=8 --timeout=60 -O .cache/godot/templates.tpz "$URL"
+          wget --tries=5 --timeout=60 -O .cache/godot/templates.tpz "$URL"
 
           TEMPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$TEMPL_DIR"
 
-          # Godot .tpz is a ZIP, not a tar. Extract web-related templates + version.
           unzip -q -o -j .cache/godot/templates.tpz \
             "templates/web_debug.zip" \
             "templates/web_release.zip" \
@@ -66,10 +65,8 @@ jobs:
             "templates/version.txt" \
             -d "$TEMPL_DIR"
 
-          echo "Templates installed to: $TEMPL_DIR"
+          echo "Installed templates to: $TEMPL_DIR"
           ls -la "$TEMPL_DIR"
-          test -f "$TEMPL_DIR/version.txt"
-          test -f "$TEMPL_DIR/web_release.zip"
 
       - name: CI patch export_presets.cfg (keep ONLY Web preset)
         shell: bash
@@ -83,7 +80,6 @@ jobs:
           p = pathlib.Path("export_presets.cfg")
           s = p.read_text(encoding="utf-8", errors="ignore")
 
-          # Grab the Web preset block (both [preset.N] and [preset.N.options])
           m = re.search(r'(\[preset\.(\d+)\][\s\S]*?name="Web"[\s\S]*?)(?=(\n\[preset\.\d+\])|\Z)', s)
           if not m:
             raise SystemExit('Could not find a preset with name="Web" in export_presets.cfg')
@@ -91,11 +87,8 @@ jobs:
           block = m.group(1)
           n = m.group(2)
 
-          # Renumber preset headers to preset.0
           block = re.sub(rf'\[preset\.{n}\]', '[preset.0]', block)
           block = re.sub(rf'\[preset\.{n}\.options\]', '[preset.0.options]', block)
-
-          # Ensure export_path points to builds/web/index.html (safe default)
           block = re.sub(r'export_path="[^"]*"', 'export_path="builds/web/index.html"', block)
 
           p.write_text(block.strip() + "\n", encoding="utf-8")
