@@ -57,17 +57,17 @@ jobs:
           TEMPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$TEMPL_DIR"
 
-          # Godot .tpz is a ZIP. Extract ONLY what Web export needs, directly into the templates dir.
+          # Godot .tpz is a ZIP. Extract ONLY the files this project’s Web preset expects.
           unzip -q -o -j .cache/godot/templates.tpz \
-            "templates/web_debug.zip" \
-            "templates/web_release.zip" \
+            "templates/web_nothreads_debug.zip" \
+            "templates/web_nothreads_release.zip" \
             "templates/version.txt" \
             -d "$TEMPL_DIR"
 
           echo "Installed templates in: $TEMPL_DIR"
           ls -la "$TEMPL_DIR"
-          test -f "$TEMPL_DIR/web_release.zip"
-          test -f "$TEMPL_DIR/web_debug.zip"
+          test -f "$TEMPL_DIR/web_nothreads_release.zip"
+          test -f "$TEMPL_DIR/web_nothreads_debug.zip"
           test -f "$TEMPL_DIR/version.txt"
 
       - name: Export Web build
