@@ -69,7 +69,7 @@ jobs:
           fi
 
           echo "Installed templates to: $DEST"
-          ls -la "$DEST" | head -n 50
+          ls -la "$DEST" | head -n 80
           test -f "$DEST/web_release.zip"
 
       - name: Ensure Web export preset exists
@@ -100,7 +100,6 @@ script_export_mode=1
 [preset.0.options]
 CFG
           else
-            # If file exists but doesn't contain a Web preset, append one
             if ! grep -q 'platform="Web"' "$PRESETS"; then
               echo "export_presets.cfg exists but has no Web preset — appending one."
               cat >> "$PRESETS" <<'CFG'
@@ -126,8 +125,8 @@ CFG
             fi
           fi
 
-          echo "----- export_presets.cfg (first 120 lines) -----"
-          sed -n '1,120p' "$PRESETS"
+          echo "----- export_presets.cfg (first 160 lines) -----"
+          sed -n '1,160p' "$PRESETS"
 
       - name: Export Web build
         shell: bash
@@ -135,21 +134,26 @@ CFG
           set -euxo pipefail
           mkdir -p "${EXPORT_DIR}"
 
-          # Use the binary from PATH (added earlier)
           Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose \
             --path "$GITHUB_WORKSPACE" \
             --export-release "Web" "${EXPORT_DIR}/index.html"
 
-          ls -la "${EXPORT_DIR}" | head -n 80
+          ls -la "${EXPORT_DIR}" | head -n 120
           test -f "${EXPORT_DIR}/index.html"
 
       - name: Add PWA files (manifest + service worker)
         shell: bash
         run: |
           set -euxo pipefail
+
+          # Ensure PWA folder exists
+          test -f "$GITHUB_WORKSPACE/pwa/manifest.webmanifest"
+          test -f "$GITHUB_WORKSPACE/pwa/sw.js"
+          test -f "$GITHUB_WORKSPACE/pwa/icon-192.png"
+          test -f "$GITHUB_WORKSPACE/pwa/icon-512.png"
+
           cd "${EXPORT_DIR}"
 
-          # Copy PWA assets from repo (these should exist in your project)
           cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
           cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
           cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
@@ -173,9 +177,9 @@ CFG
 
           # Create sw.js with embedded precache list
           python3 - << 'PY'
-          import json
+          import os, json
           tpl=open(os.path.join(os.environ["GITHUB_WORKSPACE"],"pwa","sw.js"),"r",encoding="utf-8").read()
-          precache=json.load(open("_precache.json","r"))
+          precache=json.load(open("_precache.json","r",encoding="utf-8"))
           out=tpl.replace("__PRECACHE__", json.dumps(precache))
           open("sw.js","w",encoding="utf-8").write(out)
           PY
@@ -186,10 +190,22 @@ CFG
           html=open("index.html","r",encoding="utf-8").read()
 
           if "manifest.webmanifest" not in html:
-            html=re.sub(r"(</head>)", '  <link rel="manifest" href="manifest.webmanifest">\\n  <meta name="theme-color" content="#0f1115">\\n\\1', html, flags=re.I)
+            html=re.sub(
+              r"(</head>)",
+              '  <link rel="manifest" href="manifest.webmanifest">\\n'
+              '  <meta name="theme-color" content="#0f1115">\\n\\1',
+              html,
+              flags=re.I
+            )
 
           if "navigator.serviceWorker" not in html:
-            snippet="""\\n<script>\\nif ('serviceWorker' in navigator) {\\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n}\\n</script>\\n"""
+            snippet=(
+              "\\n<script>\\n"
+              "if ('serviceWorker' in navigator) {\\n"
+              "  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n"
+              "}\\n"
+              "</script>\\n"
+            )
             html=re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
 
           open("index.html","w",encoding="utf-8").write(html)
@@ -197,7 +213,7 @@ CFG
 
           rm -f _precache.json
           echo "PWA injected OK."
-          ls -la | head -n 80
+          ls -la | head -n 120
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
