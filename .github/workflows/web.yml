@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 env:
@@ -81,7 +81,7 @@ jobs:
           fi
 
           echo "Installed templates to: $DEST"
-          ls -la "$DEST" | head -n 80
+          ls -la "$DEST" | head -n 60
           test -f "$DEST/web_release.zip"
           test -f "$DEST/web_debug.zip"
 
@@ -92,56 +92,54 @@ jobs:
           PRESETS="$PROJECT_DIR/export_presets.cfg"
 
           if [ ! -f "$PRESETS" ]; then
-            echo "No export_presets.cfg found — creating one with a Web preset."
-            {
-              echo '[preset.0]'
-              echo 'name="Web"'
-              echo 'platform="Web"'
-              echo 'runnable=true'
-              echo 'dedicated_server=false'
-              echo 'custom_features=""'
-              echo 'export_filter="all_resources"'
-              echo 'include_filter=""'
-              echo 'exclude_filter=""'
-              echo 'export_path="builds/web/index.html"'
-              echo 'encryption_include_filters=""'
-              echo 'encryption_exclude_filters=""'
-              echo 'encrypt_pck=false'
-              echo 'encrypt_directory=false'
-              echo 'script_export_mode=1'
-              echo ''
-              echo '[preset.0.options]'
-            } > "$PRESETS"
+            cat > "$PRESETS" <<'CFG'
+[preset.0]
+name="Web"
+platform="Web"
+runnable=true
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter=""
+exclude_filter=""
+export_path="builds/web/index.html"
+encryption_include_filters=""
+encryption_exclude_filters=""
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=1
+
+[preset.0.options]
+CFG
           else
             if ! grep -q 'platform="Web"' "$PRESETS"; then
-              echo "export_presets.cfg exists but has no Web preset — appending one."
-              {
-                echo ''
-                echo '[preset.99]'
-                echo 'name="Web"'
-                echo 'platform="Web"'
-                echo 'runnable=true'
-                echo 'dedicated_server=false'
-                echo 'custom_features=""'
-                echo 'export_filter="all_resources"'
-                echo 'include_filter=""'
-                echo 'exclude_filter=""'
-                echo 'export_path="builds/web/index.html"'
-                echo 'encryption_include_filters=""'
-                echo 'encryption_exclude_filters=""'
-                echo 'encrypt_pck=false'
-                echo 'encrypt_directory=false'
-                echo 'script_export_mode=1'
-                echo ''
-                echo '[preset.99.options]'
-              } >> "$PRESETS"
+              cat >> "$PRESETS" <<'CFG'
+
+[preset.99]
+name="Web"
+platform="Web"
+runnable=true
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter=""
+exclude_filter=""
+export_path="builds/web/index.html"
+encryption_include_filters=""
+encryption_exclude_filters=""
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=1
+
+[preset.99.options]
+CFG
             fi
           fi
 
-          echo "----- export_presets.cfg (first 200 lines) -----"
-          sed -n '1,200p' "$PRESETS"
+          echo "----- export_presets.cfg (first 120 lines) -----"
+          sed -n '1,120p' "$PRESETS"
 
-      - name: Export Web build (always to repo-root builds/web)
+      - name: Export Web build
         shell: bash
         run: |
           set -euxo pipefail
@@ -160,6 +158,7 @@ jobs:
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/${EXPORT_DIR}"
 
+          # These must exist in your repo
           test -f "$GITHUB_WORKSPACE/pwa/manifest.webmanifest"
           test -f "$GITHUB_WORKSPACE/pwa/icon-192.png"
           test -f "$GITHUB_WORKSPACE/pwa/icon-512.png"
@@ -169,28 +168,62 @@ jobs:
           cp "$GITHUB_WORKSPACE/pwa/icon-192.png" "$OUT/icon-192.png"
           cp "$GITHUB_WORKSPACE/pwa/icon-512.png" "$OUT/icon-512.png"
 
-          python3 -c "import os,json; root='$OUT'; files=[]; \
-for r,ds,fs in os.walk(root): \
-  for f in fs: \
-    if f in ('sw.js','_precache.json'): continue; \
-    p=os.path.join(r,f); rel=os.path.relpath(p,root).replace('\\\\','/'); files.append('./'+rel); \
-files.sort(); open(os.path.join(root,'_precache.json'),'w').write(json.dumps(files))"
+          python3 - <<'PY'
+import os, json
+out = os.environ["OUT"]
+files = []
+for root, dirs, filenames in os.walk(out):
+    for f in filenames:
+        if f in ("sw.js", "_precache.json"):
+            continue
+        full = os.path.join(root, f)
+        rel = os.path.relpath(full, out).replace("\\", "/")
+        files.append("./" + rel)
+files.sort()
+with open(os.path.join(out, "_precache.json"), "w", encoding="utf-8") as fp:
+    json.dump(files, fp)
+PY
 
-          python3 -c "import os,json; root='$OUT'; tpl=open('$GITHUB_WORKSPACE/pwa/sw.js','r',encoding='utf-8').read(); \
-pre=json.load(open(os.path.join(root,'_precache.json'),'r')); \
-open(os.path.join(root,'sw.js'),'w',encoding='utf-8').write(tpl.replace('__PRECACHE__', json.dumps(pre)))"
+          python3 - <<'PY'
+import os, json
+out = os.environ["OUT"]
+tpl_path = os.path.join(os.environ["GITHUB_WORKSPACE"], "pwa", "sw.js")
+tpl = open(tpl_path, "r", encoding="utf-8").read()
+pre = json.load(open(os.path.join(out, "_precache.json"), "r", encoding="utf-8"))
+open(os.path.join(out, "sw.js"), "w", encoding="utf-8").write(
+    tpl.replace("__PRECACHE__", json.dumps(pre))
+)
+PY
 
-          python3 -c "import re,os; p=os.path.join('$OUT','index.html'); html=open(p,'r',encoding='utf-8').read(); \
-if 'manifest.webmanifest' not in html: \
-  html=re.sub(r'(</head>)','  <link rel=\"manifest\" href=\"manifest.webmanifest\">\\n  <meta name=\"theme-color\" content=\"#0f1115\">\\n\\\\1',html,flags=re.I); \
-if 'navigator.serviceWorker' not in html: \
-  sn='\\n<script>\\nif (\\x27serviceWorker\\x27 in navigator) {\\n  window.addEventListener(\\x27load\\x27, () => navigator.serviceWorker.register(\\x27./sw.js\\x27));\\n}\\n</script>\\n'; \
-  html=re.sub(r'(</body>)', sn+'\\\\1', html, flags=re.I); \
-open(p,'w',encoding='utf-8').write(html)"
+          python3 - <<'PY'
+import os, re
+out = os.environ["OUT"]
+p = os.path.join(out, "index.html")
+html = open(p, "r", encoding="utf-8").read()
+
+if "manifest.webmanifest" not in html:
+    html = re.sub(r"(</head>)",
+                  '  <link rel="manifest" href="manifest.webmanifest">\\n  <meta name="theme-color" content="#0f1115">\\n\\1',
+                  html, flags=re.I)
+
+if "navigator.serviceWorker" not in html:
+    snippet = """
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+}
+</script>
+"""
+    html = re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
+
+open(p, "w", encoding="utf-8").write(html)
+PY
 
           rm -f "$OUT/_precache.json"
           echo "PWA injected OK."
-          ls -la "$OUT" | head -n 80
+          ls -la "$OUT" | head -n 60
+        env:
+          OUT: ${{ env.EXPORT_DIR }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -202,7 +235,6 @@ open(p,'w',encoding='utf-8').write(html)"
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
