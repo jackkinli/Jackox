@@ -1,8 +1,9 @@
 name: Build & Deploy (Web PWA)
 
-on:
+"on":
   push:
-    branches: ["main"]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -33,20 +34,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip wget ca-certificates python3
 
-      - name: Locate Godot project directory
-        shell: bash
-        run: |
-          set -euxo pipefail
-          PROJECT_FILE="$(find . -name project.godot -print -quit)"
-          if [ -z "${PROJECT_FILE:-}" ]; then
-            echo "ERROR: Could not find project.godot in repo."
-            exit 1
-          fi
-          PROJECT_DIR="$(cd "$(dirname "$PROJECT_FILE")" && pwd)"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found project.godot at: $PROJECT_FILE"
-          echo "Using PROJECT_DIR: $PROJECT_DIR"
-
       - name: Download Godot headless
         shell: bash
         run: |
@@ -57,7 +44,6 @@ jobs:
           wget -O .cache/godot/godot.zip "$URL"
           unzip -o .cache/godot/godot.zip -d .cache/godot
           chmod +x ".cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
-          echo "$GITHUB_WORKSPACE/.cache/godot" >> "$GITHUB_PATH"
 
       - name: Install export templates (tpz is a ZIP)
         shell: bash
@@ -71,159 +57,142 @@ jobs:
           DEST="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIRNAME}"
           mkdir -p "$DEST"
 
-          TMP="$(mktemp -d)"
-          unzip -q -o .cache/godot/templates.tpz -d "$TMP"
+          TMPDIR="$(mktemp -d)"
+          unzip -q -o .cache/godot/templates.tpz -d "$TMPDIR"
 
-          if [ -d "$TMP/templates" ]; then
-            cp -a "$TMP/templates/." "$DEST/"
+          # Godot tpz layout is usually TMPDIR/templates/<files>
+          if [ -d "$TMPDIR/templates" ]; then
+            cp -a "$TMPDIR/templates/." "$DEST/"
           else
-            cp -a "$TMP/." "$DEST/"
+            cp -a "$TMPDIR/." "$DEST/"
           fi
 
           echo "Installed templates to: $DEST"
-          ls -la "$DEST" | head -n 60
+          ls -la "$DEST" | head -n 80
           test -f "$DEST/web_release.zip"
-          test -f "$DEST/web_debug.zip"
 
-      - name: Ensure Web export preset exists (next to project.godot)
+      - name: Ensure Web export preset exists
         shell: bash
         run: |
           set -euxo pipefail
-          PRESETS="$PROJECT_DIR/export_presets.cfg"
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
 
-          if [ ! -f "$PRESETS" ]; then
-            cat > "$PRESETS" <<'CFG'
-[preset.0]
-name="Web"
-platform="Web"
-runnable=true
-dedicated_server=false
-custom_features=""
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="builds/web/index.html"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
+          presets = Path("export_presets.cfg")
 
-[preset.0.options]
-CFG
-          else
-            if ! grep -q 'platform="Web"' "$PRESETS"; then
-              cat >> "$PRESETS" <<'CFG'
+          web_block = textwrap.dedent("""\
+          [preset.99]
+          name="Web"
+          platform="Web"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="builds/web/index.html"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=1
 
-[preset.99]
-name="Web"
-platform="Web"
-runnable=true
-dedicated_server=false
-custom_features=""
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="builds/web/index.html"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
+          [preset.99.options]
+          """)
 
-[preset.99.options]
-CFG
-            fi
-          fi
+          # Strip the indentation we introduced for YAML readability:
+          web_block = "\n".join(line.lstrip() for line in web_block.splitlines()).strip() + "\n"
 
-          echo "----- export_presets.cfg (first 120 lines) -----"
-          sed -n '1,120p' "$PRESETS"
+          if not presets.exists():
+              presets.write_text(web_block.replace("[preset.99]", "[preset.0]"), encoding="utf-8")
+          else:
+              txt = presets.read_text(encoding="utf-8", errors="ignore")
+              if 'platform="Web"' not in txt:
+                  presets.write_text(txt.rstrip() + "\n\n" + web_block, encoding="utf-8")
+
+          print("----- export_presets.cfg (first 140 lines) -----")
+          lines = presets.read_text(encoding="utf-8", errors="ignore").splitlines()
+          for i, line in enumerate(lines[:140], 1):
+              print(f"{i:03d}: {line}")
+          PY
 
       - name: Export Web build
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/${EXPORT_DIR}"
+          mkdir -p "${EXPORT_DIR}"
 
-          Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose \
-            --path "$PROJECT_DIR" \
-            --export-release "Web" "$GITHUB_WORKSPACE/${EXPORT_DIR}/index.html"
+          .cache/godot/Godot_v${GODOT_VERSION}_linux.x86_64 --headless --verbose \
+            --path "$GITHUB_WORKSPACE" \
+            --export-release "Web" "${EXPORT_DIR}/index.html"
 
-          ls -la "$GITHUB_WORKSPACE/${EXPORT_DIR}" | head -n 80
-          test -f "$GITHUB_WORKSPACE/${EXPORT_DIR}/index.html"
+          ls -la "${EXPORT_DIR}" | head -n 120
+          test -f "${EXPORT_DIR}/index.html"
 
       - name: Add PWA files (manifest + service worker)
         shell: bash
         run: |
           set -euxo pipefail
+
           OUT="$GITHUB_WORKSPACE/${EXPORT_DIR}"
+          cd "$OUT"
 
-          # These must exist in your repo
-          test -f "$GITHUB_WORKSPACE/pwa/manifest.webmanifest"
-          test -f "$GITHUB_WORKSPACE/pwa/icon-192.png"
-          test -f "$GITHUB_WORKSPACE/pwa/icon-512.png"
-          test -f "$GITHUB_WORKSPACE/pwa/sw.js"
-
-          cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" "$OUT/manifest.webmanifest"
-          cp "$GITHUB_WORKSPACE/pwa/icon-192.png" "$OUT/icon-192.png"
-          cp "$GITHUB_WORKSPACE/pwa/icon-512.png" "$OUT/icon-512.png"
+          cp "$GITHUB_WORKSPACE/pwa/manifest.webmanifest" ./manifest.webmanifest
+          cp "$GITHUB_WORKSPACE/pwa/icon-192.png" ./icon-192.png
+          cp "$GITHUB_WORKSPACE/pwa/icon-512.png" ./icon-512.png
 
           python3 - <<'PY'
-import os, json
-out = os.environ["OUT"]
-files = []
-for root, dirs, filenames in os.walk(out):
-    for f in filenames:
-        if f in ("sw.js", "_precache.json"):
-            continue
-        full = os.path.join(root, f)
-        rel = os.path.relpath(full, out).replace("\\", "/")
-        files.append("./" + rel)
-files.sort()
-with open(os.path.join(out, "_precache.json"), "w", encoding="utf-8") as fp:
-    json.dump(files, fp)
-PY
+          import os, json
+
+          files=[]
+          for root, _, filenames in os.walk("."):
+              for f in filenames:
+                  if f in ("sw.js", "_precache.json"):
+                      continue
+                  p=os.path.join(root,f).replace("\\","/")
+                  if p.startswith("./"):
+                      p=p[2:]
+                  files.append("./"+p)
+
+          files.sort()
+          with open("_precache.json","w",encoding="utf-8") as fp:
+              json.dump(files, fp)
+          PY
 
           python3 - <<'PY'
-import os, json
-out = os.environ["OUT"]
-tpl_path = os.path.join(os.environ["GITHUB_WORKSPACE"], "pwa", "sw.js")
-tpl = open(tpl_path, "r", encoding="utf-8").read()
-pre = json.load(open(os.path.join(out, "_precache.json"), "r", encoding="utf-8"))
-open(os.path.join(out, "sw.js"), "w", encoding="utf-8").write(
-    tpl.replace("__PRECACHE__", json.dumps(pre))
-)
-PY
+          import os, json
+
+          root=os.environ["GITHUB_WORKSPACE"]
+          tpl=open(os.path.join(root,"pwa","sw.js"),"r",encoding="utf-8").read()
+          precache=json.load(open("_precache.json","r",encoding="utf-8"))
+          out=tpl.replace("__PRECACHE__", json.dumps(precache))
+          open("sw.js","w",encoding="utf-8").write(out)
+          PY
 
           python3 - <<'PY'
-import os, re
-out = os.environ["OUT"]
-p = os.path.join(out, "index.html")
-html = open(p, "r", encoding="utf-8").read()
+          import re
 
-if "manifest.webmanifest" not in html:
-    html = re.sub(r"(</head>)",
-                  '  <link rel="manifest" href="manifest.webmanifest">\\n  <meta name="theme-color" content="#0f1115">\\n\\1',
-                  html, flags=re.I)
+          html=open("index.html","r",encoding="utf-8").read()
 
-if "navigator.serviceWorker" not in html:
-    snippet = """
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
-}
-</script>
-"""
-    html = re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
+          if "manifest.webmanifest" not in html:
+              html=re.sub(
+                  r"(</head>)",
+                  '  <link rel="manifest" href="manifest.webmanifest">\\n'
+                  '  <meta name="theme-color" content="#0f1115">\\n\\1',
+                  html,
+                  flags=re.I,
+              )
 
-open(p, "w", encoding="utf-8").write(html)
-PY
+          if "navigator.serviceWorker" not in html:
+              snippet="\\n<script>\\nif ('serviceWorker' in navigator) {\\n  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));\\n}\\n</script>\\n"
+              html=re.sub(r"(</body>)", snippet + "\\1", html, flags=re.I)
 
-          rm -f "$OUT/_precache.json"
-          echo "PWA injected OK."
-          ls -la "$OUT" | head -n 60
-        env:
-          OUT: ${{ env.EXPORT_DIR }}
+          open("index.html","w",encoding="utf-8").write(html)
+          PY
+
+          rm -f _precache.json
+          ls -la | head -n 120
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -235,6 +204,7 @@ PY
     runs-on: ubuntu-latest
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
